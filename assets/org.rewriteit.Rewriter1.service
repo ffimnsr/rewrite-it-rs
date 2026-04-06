@@ -1,0 +1,10 @@
+# DBus session-bus service activation file.
+#
+# Install to: ~/.local/share/dbus-1/services/
+#
+# With this file in place, any DBus call to org.rewriteit.Rewriter1 will
+# automatically start the daemon — no manual daemon management needed.
+
+[D-BUS Service]
+Name=org.rewriteit.Rewriter1
+Exec=/usr/local/bin/rewrite-it daemon

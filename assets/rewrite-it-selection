@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# rewrite-it-selection — clipboard helper used by desktop shortcut integrations.
+#
+# Usage:
+#   rewrite-it-selection [STYLE]           # rewrite primary selection
+#   rewrite-it-selection [STYLE] FILE      # rewrite contents of FILE
+#
+# Reads the currently selected text (primary selection on X11/Wayland), sends it
+# to the rewrite-it daemon over DBus, then copies the result to the clipboard and
+# shows a desktop notification so the user can paste it anywhere.
+#
+# Wayland: requires wl-paste / wl-copy  (wl-clipboard package)
+# X11:     requires xclip  OR  xdotool
+
+set -euo pipefail
+
+STYLE="${1:-grammar}"
+FILE="${2:-}"
+
+# ── 1. Get the text to rewrite ────────────────────────────────────────────────
+
+if [[ -n "$FILE" && -f "$FILE" ]]; then
+    TEXT="$(cat "$FILE")"
+elif command -v wl-paste &>/dev/null; then
+    # Wayland: use the primary (selection) buffer
+    TEXT="$(wl-paste --primary --no-newline 2>/dev/null || wl-paste --no-newline 2>/dev/null)"
+elif command -v xclip &>/dev/null; then
+    TEXT="$(xclip -o -selection primary 2>/dev/null || xclip -o -selection clipboard 2>/dev/null)"
+elif command -v xdotool &>/dev/null; then
+    TEXT="$(xdotool getactivewindow getwindowfocus --sync type --delay 0 '' 2>/dev/null; xclip -o 2>/dev/null || true)"
+else
+    notify-send -i error "rewrite-it" "Could not read selection.\nInstall wl-clipboard or xclip." 2>/dev/null || true
+    exit 1
+fi
+
+if [[ -z "${TEXT// }" ]]; then
+    notify-send -i dialog-information "rewrite-it" "No text selected." 2>/dev/null || true
+    exit 0
+fi
+
+# ── 2. Show "working" notification ───────────────────────────────────────────
+
+notify-send -i accessories-text-editor "rewrite-it" "Rewriting… (${STYLE})" 2>/dev/null || true
+
+# ── 3. Call the DBus service ──────────────────────────────────────────────────
+# The daemon auto-starts via DBus activation if not already running.
+
+RESULT="$(printf '%s' "$TEXT" | rewrite-it rewrite --style "$STYLE" 2>/dev/null)"
+
+if [[ -z "${RESULT// }" ]]; then
+    notify-send -i error "rewrite-it" "Rewriting failed. Is the daemon installed?" 2>/dev/null || true
+    exit 1
+fi
+
+# ── 4. Copy result to clipboard ───────────────────────────────────────────────
+
+if command -v wl-copy &>/dev/null; then
+    printf '%s' "$RESULT" | wl-copy
+elif command -v xclip &>/dev/null; then
+    printf '%s' "$RESULT" | xclip -selection clipboard
+elif command -v xdotool &>/dev/null; then
+    printf '%s' "$RESULT" | xclip -i 2>/dev/null || true
+fi
+
+# ── 5. Done notification ──────────────────────────────────────────────────────
+
+notify-send -i accessories-text-editor \
+    "rewrite-it" "Rewritten text copied to clipboard — paste with Ctrl+V." \
+    2>/dev/null || true

@@ -1,0 +1,52 @@
+[package]
+name = "rewrite-it"
+version = "0.1.0"
+edition = "2021"
+description = "LLM-powered text rewriting as a self-contained DBus service for Linux desktops"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "rewrite-it"
+path = "src/main.rs"
+
+# ── Optional GPU back-ends ───────────────────────────────────────────────────
+[features]
+default = []
+cuda   = ["llama-cpp-2/cuda"]
+vulkan = ["llama-cpp-2/vulkan"]
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# DBus (session bus, tokio reactor)
+zbus = { version = "4", features = ["tokio"] }
+
+# LLM inference via llama.cpp (builds llama.cpp from source – needs cmake + cc)
+llama-cpp-2 = "0.1"
+
+# Model download from HuggingFace Hub
+hf-hub = { version = "0.3", features = ["tokio"] }
+
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# Error context propagation
+anyhow = "1"
+
+# Structured logging (respects RUST_LOG env var)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Config file serialisation
+serde = { version = "1", features = ["derive"] }
+toml  = "0.8"
+
+# XDG platform directories (~/.config, ~/.local/share, …)
+dirs = "5"
+
+# UUID for streaming job tracking
+uuid = { version = "1", features = ["v4"] }
+
+# UTF-8 streaming decoder required by llama-cpp-2::token_to_piece
+encoding_rs = "0.8"
