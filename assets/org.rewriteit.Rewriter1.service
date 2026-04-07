@@ -4,7 +4,14 @@
 #
 # With this file in place, any DBus call to org.rewriteit.Rewriter1 will
 # automatically start the daemon — no manual daemon management needed.
+#
+# SystemdService is required when running dbus-broker (the default on modern
+# Fedora/Arch/etc.).  dbus-broker ignores the Exec= field and delegates
+# activation to systemd; without SystemdService= the name is reported as
+# "not activatable" even though the file exists.
+# The Exec= fallback is kept for environments still using classic dbus-daemon.
 
 [D-BUS Service]
 Name=org.rewriteit.Rewriter1
 Exec=%h/.local/bin/rewrite-it daemon
+SystemdService=rewrite-it.service

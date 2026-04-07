@@ -85,6 +85,14 @@ sed "s|Exec=.*|Exec=$INSTALL_DIR/rewrite-it daemon|" \
 
 echo "    dbus    → $DBUS_SVC_DIR/org.rewriteit.Rewriter1.service"
 
+# Reload dbus-broker so it picks up the new activation file immediately.
+# Classic dbus-daemon re-scans on first activation attempt, but dbus-broker
+# (used on Fedora, Arch, and other modern distros) requires an explicit reload.
+if systemctl --user is-active --quiet dbus-broker.service 2>/dev/null; then
+    systemctl --user reload dbus-broker.service
+    echo "    systemctl --user reload dbus-broker.service  ✓"
+fi
+
 # ── Systemd user service (optional, provides watchdog + auto-restart) ─────────
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 mkdir -p "$SYSTEMD_USER_DIR"
