@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-const DEFAULT_HF_REPO: &str = "bartowski/Phi-4-mini-instruct-GGUF";
+const DEFAULT_HF_REPO: &str = "unsloth/Phi-4-mini-instruct-GGUF";
 const DEFAULT_HF_FILENAME: &str = "Phi-4-mini-instruct-Q4_K_M.gguf";
 
 /// Settings read from `~/.config/rewrite-it/config.toml` (created with defaults on first run).
@@ -27,6 +27,11 @@ pub struct Config {
     pub n_threads: Option<i32>,
     /// Random seed for reproducible sampling.
     pub seed: u32,
+    /// Seconds of inactivity before the daemon exits automatically (None = never).
+    pub idle_timeout_secs: Option<u64>,
+    /// Maximum seconds a single inference request may run before it is
+    /// considered hung and returns an error (watchdog also uses this).
+    pub inference_timeout_secs: u64,
 }
 
 impl Default for Config {
@@ -46,6 +51,8 @@ impl Default for Config {
             n_gpu_layers: 0,
             n_threads: None,
             seed: 42,
+            idle_timeout_secs: Some(300),
+            inference_timeout_secs: 120,
         }
     }
 }

@@ -76,6 +76,25 @@ sed "s|Exec=.*|Exec=$INSTALL_DIR/rewrite-it daemon|" \
 
 echo "    dbus    → $DBUS_SVC_DIR/org.rewriteit.Rewriter1.service"
 
+# ── Systemd user service (optional, provides watchdog + auto-restart) ─────────
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+mkdir -p "$SYSTEMD_USER_DIR"
+
+# Patch the ExecStart path to the actual binary location.
+sed "s|ExecStart=.*|ExecStart=$INSTALL_DIR/rewrite-it daemon|" \
+    "$REPO_ROOT/assets/rewrite-it.service" \
+    > "$SYSTEMD_USER_DIR/rewrite-it.service"
+
+echo "    systemd → $SYSTEMD_USER_DIR/rewrite-it.service"
+
+if command -v systemctl &>/dev/null && systemctl --user is-system-running &>/dev/null 2>&1; then
+    systemctl --user daemon-reload
+    echo "    systemctl --user daemon-reload  ✓"
+    echo "    To enable auto-start on login: systemctl --user enable --now rewrite-it.service"
+else
+    echo "    (systemd user session not running; reload manually after login)"
+fi
+
 # ── KDE service menu ──────────────────────────────────────────────────────────
 if [ -d "$HOME/.local/share/kio" ] || command -v plasmashell &>/dev/null; then
     KDE_MENU_DIR="$HOME/.local/share/kio/servicemenus"
@@ -117,13 +136,10 @@ else
     echo "    Set it manually: $SHORTCUT_CMD"
 fi
 
-# ── First-run model download ──────────────────────────────────────────────────
-echo ""
-echo "==> Triggering model download (installs to ~/.local/share/rewrite-it/models/)…"
-"$INSTALL_DIR/rewrite-it" setup
-
 echo ""
 echo "==> Installation complete!"
 echo "    Start the daemon     : rewrite-it"
 echo "    Rewrite from terminal: echo 'Hello world.' | rewrite-it rewrite"
+echo "    Check model status   : rewrite-it status"
+echo "    Pre-download model   : rewrite-it setup"
 echo "    Keyboard shortcut    : $SHORTCUT_KEY  (select text first, then press)"

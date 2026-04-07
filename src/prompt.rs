@@ -1,3 +1,5 @@
+use std::{convert::Infallible, str::FromStr};
+
 use anyhow::{Context, Result};
 use llama_cpp_2::model::{LlamaChatMessage, LlamaModel};
 
@@ -19,51 +21,71 @@ pub enum Style {
 }
 
 impl Style {
-    pub fn from_str(s: &str) -> Self {
+    fn parse_lossy(s: &str) -> Self {
         match s.to_lowercase().trim() {
-            "formal"    => Self::Formal,
-            "casual"    => Self::Casual,
-            "concise"   => Self::Concise,
+            "formal" => Self::Formal,
+            "casual" => Self::Casual,
+            "concise" => Self::Concise,
             "elaborate" => Self::Elaborate,
-            "creative"  => Self::Creative,
-            _           => Self::Grammar, // default + "grammar"
+            "creative" => Self::Creative,
+            _ => Self::Grammar, // default + "grammar"
         }
     }
 
     pub fn all_names() -> &'static [&'static str] {
-        &["grammar", "formal", "casual", "concise", "elaborate", "creative"]
+        &[
+            "grammar",
+            "formal",
+            "casual",
+            "concise",
+            "elaborate",
+            "creative",
+        ]
     }
 
     fn instruction(self) -> &'static str {
         match self {
-            Self::Grammar =>
+            Self::Grammar => {
                 "Fix any grammar, spelling, and punctuation errors. \
                  Preserve the original phrasing and tone as much as possible. \
-                 Return only the corrected text.",
-            Self::Formal =>
+                 Return only the corrected text."
+            }
+            Self::Formal => {
                 "Rewrite in a formal, professional register. \
                  Keep the core message intact. \
-                 Return only the rewritten text.",
-            Self::Casual =>
+                 Return only the rewritten text."
+            }
+            Self::Casual => {
                 "Rewrite in a casual, conversational tone. \
                  Keep the main ideas. \
-                 Return only the rewritten text.",
-            Self::Concise =>
+                 Return only the rewritten text."
+            }
+            Self::Concise => {
                 "Rewrite more concisely, removing unnecessary words and filler phrases. \
                  Preserve all key information. \
-                 Return only the rewritten text.",
-            Self::Elaborate =>
+                 Return only the rewritten text."
+            }
+            Self::Elaborate => {
                 "Expand the text with additional detail, context, and supporting ideas. \
-                 Return only the elaborated version.",
-            Self::Creative =>
+                 Return only the elaborated version."
+            }
+            Self::Creative => {
                 "Rewrite creatively with vivid language while preserving the meaning. \
-                 Return only the rewritten text.",
+                 Return only the rewritten text."
+            }
         }
     }
 }
 
-const SYSTEM_PROMPT: &str =
-    "You are a precise writing assistant. \
+impl FromStr for Style {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(Self::parse_lossy(s))
+    }
+}
+
+const SYSTEM_PROMPT: &str = "You are a precise writing assistant. \
      When asked to rewrite text, output only the improved version — \
      no explanations, no preamble, no quotation marks, no markdown.";
 
@@ -101,7 +123,7 @@ mod tests {
     #[test]
     fn style_from_str_round_trips() {
         for name in Style::all_names() {
-            let s = Style::from_str(name);
+            let s = Style::from_str(name).expect("style parsing is infallible");
             // Ensure every recognised name maps to something non-default
             // (or is exactly "grammar" which maps to Grammar)
             let _ = s; // just check it doesn't panic
@@ -110,6 +132,9 @@ mod tests {
 
     #[test]
     fn unknown_style_defaults_to_grammar() {
-        assert_eq!(Style::from_str("nonsense"), Style::Grammar);
+        assert_eq!(
+            Style::from_str("nonsense").expect("style parsing is infallible"),
+            Style::Grammar
+        );
     }
 }

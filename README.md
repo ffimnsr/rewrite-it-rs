@@ -17,6 +17,7 @@ the cloud.
 | **Self-contained** | llama.cpp is compiled from source at build time (no external llama binaries) |
 | **DBus integration** | First-class Linux desktop integration (KDE Plasma + GNOME) |
 | **DBus activation** | Daemon auto-starts on first request; no background service manager needed |
+| **Lazy model startup** | Model download and load happen on first real rewrite request |
 | **Streaming** | `StartRewrite` emits token-by-token DBus signals for live UX |
 | **Clipboard helper** | `rewrite-it-selection` reads selected text → rewrites → copies result |
 | **GPU-optional** | Build with `--features cuda` or `--features vulkan` for GPU acceleration |
@@ -26,17 +27,24 @@ the cloud.
 ## Quick start
 
 ```bash
-# 1. Install (builds, downloads model, registers keyboard shortcut)
+# 1. Install (builds and registers keyboard shortcut)
 bash install.sh
 
 # 2. Start the daemon (auto-starts via DBus activation too)
 rewrite-it
 
-# 3. Rewrite from the terminal
+# 3. Check readiness/status
+rewrite-it status
+
+# 4. Rewrite from the terminal
 echo "the cat eat the mouse" | rewrite-it rewrite
 # → "The cat eats the mouse."
 
-# 4. Or use the keyboard shortcut (select text first)
+# 4a. Smoke-test the local LLM directly without DBus
+echo "the cat eat the mouse" | cargo run --bin llm-test -- --style grammar
+# → "The cat eats the mouse."
+
+# 5. Or use the keyboard shortcut (select text first)
 #    KDE:   Meta+Shift+R
 #    GNOME: Super+Shift+R
 ```
@@ -45,18 +53,17 @@ echo "the cat eat the mouse" | rewrite-it rewrite
 
 ## Default model
 
-[Phi-4-mini-instruct](https://huggingface.co/microsoft/Phi-4-mini-instruct) quantised to
-`Q4_K_M` (~2.3 GB) via
-[`bartowski/Phi-4-mini-instruct-GGUF`](https://huggingface.co/bartowski/Phi-4-mini-instruct-GGUF).
+[Phi-4-mini-instruct](https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF)
+in Unsloth's `Q4_K_M` GGUF (~2.49 GB), chosen as a lighter CPU-friendly default.
 
-The model is automatically downloaded on first run to
+The model is automatically downloaded on first rewrite request to
 `~/.local/share/rewrite-it/models/`.
 
 To use a different GGUF model, edit `~/.config/rewrite-it/config.toml`:
 
 ```toml
 model_path  = "/path/to/your/model.gguf"
-hf_repo     = "bartowski/Phi-4-mini-instruct-GGUF"   # used only when model_path is absent
+hf_repo     = "unsloth/Phi-4-mini-instruct-GGUF"   # used only when model_path is absent
 hf_filename = "Phi-4-mini-instruct-Q4_K_M.gguf"
 ```
 
@@ -137,7 +144,7 @@ echo "the cat eat the mouse" | rewrite-it rewrite --style grammar
 
 ```toml
 model_path   = "~/.local/share/rewrite-it/models/Phi-4-mini-instruct-Q4_K_M.gguf"
-hf_repo      = "bartowski/Phi-4-mini-instruct-GGUF"
+hf_repo      = "unsloth/Phi-4-mini-instruct-GGUF"
 hf_filename  = "Phi-4-mini-instruct-Q4_K_M.gguf"
 context_size = 4096
 max_tokens   = 1024
@@ -146,6 +153,9 @@ n_gpu_layers = 0
 seed         = 42
 # n_threads  = 8   # uncomment to pin CPU thread count
 ```
+
+Use `rewrite-it status` to inspect whether the daemon is `idle`, `downloading`,
+`loading`, `ready`, or `failed`.
 
 ---
 
@@ -180,7 +190,7 @@ seed         = 42
 │  rewrite-it daemon (Rust + tokio + zbus)                │
 │    ┌──────────────────────────────────────────────────┐ │
 │    │  LLM Engine (llama-cpp-2)                        │ │
-│    │    Phi-4-mini-instruct Q4_K_M (≈2.3 GB)          │ │
+│    │    Phi-4-mini-instruct Q4_K_M (≈2.49 GB)         │ │
 │    │    CPU / CUDA / Vulkan                           │ │
 │    └──────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────┘

@@ -1,0 +1,36 @@
+# Systemd user service for rewrite-it.
+#
+# Install to: ~/.config/systemd/user/
+#
+# After installation:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now rewrite-it.service
+#
+# The service uses Type=notify so systemd waits for the daemon to signal
+# readiness (READY=1 is sent once the DBus object is on the bus).
+# WatchdogSec causes systemd to restart the service if it stops responding —
+# e.g. when llama.cpp hangs in a blocking inference call.
+
+[Unit]
+Description=rewrite-it LLM text rewriting daemon
+Documentation=https://github.com/your-org/rewrite-it
+# Start after the graphical session so the session DBus is available.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=notify
+ExecStart=%h/.local/bin/rewrite-it daemon
+Restart=on-failure
+RestartSec=5
+
+# Give the model enough time to download on first run (may be several GB).
+TimeoutStartSec=600
+
+# Watchdog: if the process stops pinging within 30 s systemd restarts it.
+# The daemon suppresses pings when it detects a hung inference thread,
+# so a frozen llama.cpp call will be caught and the service restarted.
+WatchdogSec=30
+
+[Install]
+WantedBy=graphical-session.target
