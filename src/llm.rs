@@ -121,14 +121,20 @@ impl InferenceWorker {
                     "inference worker ready (context reuse enabled)"
                 );
 
+                // Tracks the last cached KV-prefix: (style, prefix_token_len).
+                // Allows partial KV-cache eviction between same-style requests,
+                // skipping re-prefill of the invariant system + instruction prefix.
+                let mut cached_prefix: Option<(Style, usize)> = None;
+
                 while let Ok(job) = rx.recv() {
-                    // Clear KV-cache so the context is ready for a fresh sequence.
-                    ctx.clear_kv_cache();
+                    // KV-cache management is handled inside run_inference_with_ctx,
+                    // which performs a full clear on style change and a partial
+                    // eviction (keeping the prefix) on same-style requests.
 
                     // Record start time for hang detection.
                     started_at.store(current_unix_secs(), Ordering::Relaxed);
 
-                    process_job(&model, &mut ctx, &config, job);
+                    process_job(&model, &mut ctx, &config, job, &mut cached_prefix);
 
                     // Mark inference as idle.
                     started_at.store(0, Ordering::Relaxed);
@@ -187,13 +193,14 @@ fn process_job(
     ctx: &mut llama_cpp_2::context::LlamaContext<'_>,
     config: &Config,
     job: InferenceJob,
+    cached_prefix: &mut Option<(Style, usize)>,
 ) {
     match job {
         InferenceJob::Full { text, style, reply_tx } => {
             let result = (|| {
                 let prompt = crate::prompt::build_prompt(model, &text, style)?;
                 let mut output = String::new();
-                run_inference_with_ctx(model, ctx, config, &prompt, |piece| {
+                run_inference_with_ctx(model, ctx, config, style, &prompt, cached_prefix, |piece| {
                     output.push_str(&piece);
                     true
                 })?;
@@ -204,7 +211,7 @@ fn process_job(
         InferenceJob::Streaming { text, style, chunk_tx, done_tx } => {
             let result = (|| {
                 let prompt = crate::prompt::build_prompt(model, &text, style)?;
-                run_inference_with_ctx(model, ctx, config, &prompt, |piece| {
+                run_inference_with_ctx(model, ctx, config, style, &prompt, cached_prefix, |piece| {
                     chunk_tx.blocking_send(piece).is_ok()
                 })
             })();
@@ -433,14 +440,28 @@ fn current_unix_secs() -> u64 {
 
 /// Token-by-token inference loop using a pre-allocated, caller-managed context.
 ///
-/// The context's KV-cache must be cleared by the caller before invoking this
-/// function.  `on_token` is called with each decoded piece; returning `false`
-/// stops generation early (e.g. the streaming receiver was dropped).
+/// ## KV-cache prefix reuse
+///
+/// The user message is always formatted as `{instruction}\n\n---\n{user_text}`.
+/// Everything before (and including) the `---\n` separator is invariant for a
+/// given style.  On consecutive requests with the same style the function only
+/// evicts the suffix tokens from the KV-cache and re-prefills those, leaving
+/// the system-prompt and style-instruction prefix warm.
+///
+/// `cached_prefix` tracks `(style, prefix_token_len)` across calls.  Pass
+/// the same `Option` for the lifetime of the inference worker thread.
+///
+/// ## Sampler choice
+///
+/// `Style::Grammar` uses greedy decoding (maximally deterministic, slightly
+/// faster).  All other styles use temperature → top-k → stochastic dist.
 fn run_inference_with_ctx<F>(
     model: &LlamaModel,
     ctx: &mut llama_cpp_2::context::LlamaContext<'_>,
     config: &Config,
+    style: Style,
     prompt: &str,
+    cached_prefix: &mut Option<(Style, usize)>,
     mut on_token: F,
 ) -> Result<()>
 where
@@ -448,49 +469,120 @@ where
 {
     let max_new = config.max_tokens as i32;
 
-    // ── Tokenise prompt ────────────────────────────────────────────────────
-    let tokens = model
-        .str_to_token(prompt, AddBos::Always)
-        .context("tokenising prompt")?;
+    // ── Prefix-cache analysis ──────────────────────────────────────────────
+    // `build_prompt` always places the user text after `\n---\n`.
+    // Tokenising everything up to and including that separator gives us a
+    // stable prefix length we can keep in the KV-cache across same-style
+    // requests.
+    const SEP: &str = "\n---\n";
+    let prefix_char_end = prompt.find(SEP).map(|i| i + SEP.len()).unwrap_or(0);
 
-    let n_prompt = tokens.len() as i32;
-    let n_ctx = ctx.n_ctx() as i32;
+    let prefix_token_len: usize = if prefix_char_end > 0 {
+        model
+            .str_to_token(&prompt[..prefix_char_end], AddBos::Always)
+            .map(|t| t.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
-    anyhow::ensure!(
-        n_prompt + max_new <= n_ctx,
-        "prompt ({n_prompt} tokens) + max_tokens ({max_new}) exceeds context size ({n_ctx}); \
-         increase context_size in config or shorten the input"
-    );
+    let can_reuse = prefix_token_len > 0
+        && cached_prefix
+            .as_ref()
+            .is_some_and(|&(cs, cl)| cs == style && cl == prefix_token_len);
 
-    // ── Batch: prefill ─────────────────────────────────────────────────────
-    let prefill_cap = tokens.len().max(1);
-    let mut batch = LlamaBatch::new(prefill_cap, 1);
+    // ── Prefill ────────────────────────────────────────────────────────────
+    // Returns (total_prompt_tokens, first_sample_batch_idx).
+    // `first_sample_batch_idx` is the slot in the last decoded batch whose
+    // logits should be consumed for the very first generated token.
+    let (n_prompt, first_sample_idx): (i32, i32) = if can_reuse {
+        // Evict only the suffix (previous user text + generated response).
+        // The prefix tokens [0, prefix_token_len) stay warm in the KV-cache.
+        ctx.clear_kv_cache_seq(Some(0), Some(prefix_token_len as u32), None)
+            .unwrap_or(false);
 
-    let last_idx = n_prompt - 1;
-    for (i, token) in (0i32..).zip(tokens.into_iter()) {
-        batch
-            .add(token, i, &[0], i == last_idx)
-            .context("adding prompt token to batch")?;
-    }
+        let suffix_tokens = model
+            .str_to_token(&prompt[prefix_char_end..], AddBos::Never)
+            .context("tokenising prompt suffix")?;
 
-    ctx.decode(&mut batch).context("prefill decode failed")?;
+        let n_suffix = suffix_tokens.len() as i32;
+        let n_total = prefix_token_len as i32 + n_suffix;
+        let n_ctx = ctx.n_ctx() as i32;
+
+        anyhow::ensure!(
+            n_total + max_new <= n_ctx,
+            "prompt ({n_total} tokens) + max_tokens ({max_new}) exceeds context size ({n_ctx}); \
+             increase context_size in config or shorten the input"
+        );
+
+        let mut batch = LlamaBatch::new(suffix_tokens.len().max(1), 1);
+        let last_idx = n_suffix - 1;
+        for (i, token) in suffix_tokens.into_iter().enumerate() {
+            let pos = prefix_token_len as i32 + i as i32;
+            batch
+                .add(token, pos, &[0], i as i32 == last_idx)
+                .context("adding suffix token to batch")?;
+        }
+        ctx.decode(&mut batch).context("suffix prefill decode failed")?;
+
+        (n_total, last_idx)
+    } else {
+        // Full prefill — either the first request or a different style.
+        ctx.clear_kv_cache();
+
+        let tokens = model
+            .str_to_token(prompt, AddBos::Always)
+            .context("tokenising prompt")?;
+
+        let n_total = tokens.len() as i32;
+        let n_ctx = ctx.n_ctx() as i32;
+
+        anyhow::ensure!(
+            n_total + max_new <= n_ctx,
+            "prompt ({n_total} tokens) + max_tokens ({max_new}) exceeds context size ({n_ctx}); \
+             increase context_size in config or shorten the input"
+        );
+
+        let mut batch = LlamaBatch::new(tokens.len().max(1), 1);
+        let last_idx = n_total - 1;
+        for (i, token) in (0i32..).zip(tokens.into_iter()) {
+            batch
+                .add(token, i, &[0], i == last_idx)
+                .context("adding prompt token to batch")?;
+        }
+        ctx.decode(&mut batch).context("prefill decode failed")?;
+
+        // Cache the prefix for future same-style requests.
+        if prefix_token_len > 0 {
+            *cached_prefix = Some((style, prefix_token_len));
+        }
+
+        (n_total, last_idx)
+    };
 
     // ── Sampler ────────────────────────────────────────────────────────────
-    // temperature → top-k (loose filter) → dist (probabilistic pick).
-    // With low temperature (≈0.3) the output is near-deterministic.
-    let mut sampler = LlamaSampler::chain_simple([
-        LlamaSampler::temp(config.temperature.max(0.01)),
-        LlamaSampler::top_k(40),
-        LlamaSampler::dist(config.seed),
-    ]);
+    // Grammar uses greedy decoding: maximally deterministic and slightly faster
+    // since no softmax/sampling arithmetic is needed.
+    // All other styles use temperature + top-k + stochastic dist sampling.
+    let mut sampler = if style == Style::Grammar {
+        LlamaSampler::greedy()
+    } else {
+        LlamaSampler::chain_simple([
+            LlamaSampler::temp(config.temperature.max(0.01)),
+            LlamaSampler::top_k(40),
+            LlamaSampler::dist(config.seed),
+        ])
+    };
 
     // ── Generation loop ────────────────────────────────────────────────────
-    let mut n_cur = batch.n_tokens();
+    let mut n_cur = n_prompt;
     let n_max = n_prompt + max_new;
     let mut decoder = UTF_8.new_decoder();
+    let mut batch = LlamaBatch::new(1, 1);
+    let mut sample_idx = first_sample_idx;
 
     while n_cur <= n_max {
-        let token = sampler.sample(ctx, batch.n_tokens() - 1);
+        let token = sampler.sample(ctx, sample_idx);
         sampler.accept(token);
 
         if model.is_eog_token(token) {
@@ -510,6 +602,8 @@ where
             .add(token, n_cur, &[0], true)
             .context("adding generated token to batch")?;
         n_cur += 1;
+        // After the first generated token the batch always has exactly one token at slot 0.
+        sample_idx = 0;
 
         ctx.decode(&mut batch).context("generation decode failed")?;
     }

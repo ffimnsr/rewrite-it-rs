@@ -154,6 +154,7 @@ async fn run_daemon() -> Result<()> {
                 let idle = eng.seconds_idle();
                 if idle > 0 && idle >= idle_secs {
                     info!(idle_secs, "idle timeout reached, exiting daemon");
+                    let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Stopping]);
                     std::process::exit(0);
                 }
             }

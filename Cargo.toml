@@ -53,3 +53,9 @@ sd-notify = "0.4"
 
 # UTF-8 streaming decoder required by llama-cpp-2::token_to_piece
 encoding_rs = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

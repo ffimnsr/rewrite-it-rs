@@ -259,6 +259,7 @@ pub async fn serve(engine: Arc<EngineManager>) -> Result<()> {
 
     tokio::signal::ctrl_c().await?;
     info!("shutting down");
+    let _ = sd_notify::notify(false, &[NotifyState::Stopping]);
 
     Ok(())
 }

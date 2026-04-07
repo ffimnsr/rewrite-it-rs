@@ -7,4 +7,4 @@
 
 [D-BUS Service]
 Name=org.rewriteit.Rewriter1
-Exec=/usr/local/bin/rewrite-it daemon
+Exec=%h/.local/bin/rewrite-it daemon
