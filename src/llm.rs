@@ -150,7 +150,11 @@ impl InferenceWorker {
     fn run_full(&self, text: String, style: Style, timeout: Duration) -> Result<String> {
         let (reply_tx, reply_rx) = stdmpsc::sync_channel(1);
         self.tx
-            .send(InferenceJob::Full { text, style, reply_tx })
+            .send(InferenceJob::Full {
+                text,
+                style,
+                reply_tx,
+            })
             .map_err(|_| anyhow::anyhow!("inference worker has stopped"))?;
         reply_rx
             .recv_timeout(timeout)
@@ -167,7 +171,12 @@ impl InferenceWorker {
     ) -> Result<()> {
         let (done_tx, done_rx) = stdmpsc::sync_channel(1);
         self.tx
-            .send(InferenceJob::Streaming { text, style, chunk_tx, done_tx })
+            .send(InferenceJob::Streaming {
+                text,
+                style,
+                chunk_tx,
+                done_tx,
+            })
             .map_err(|_| anyhow::anyhow!("inference worker has stopped"))?;
         done_rx
             .recv_timeout(timeout)
@@ -180,9 +189,7 @@ fn make_ctx_params(config: &Config) -> LlamaContextParams {
     let mut params = LlamaContextParams::default()
         .with_n_ctx(Some(NonZeroU32::new(config.context_size).unwrap()));
     if let Some(threads) = config.n_threads {
-        params = params
-            .with_n_threads(threads)
-            .with_n_threads_batch(threads);
+        params = params.with_n_threads(threads).with_n_threads_batch(threads);
     }
     params
 }
@@ -196,19 +203,36 @@ fn process_job(
     cached_prefix: &mut Option<(Style, usize)>,
 ) {
     match job {
-        InferenceJob::Full { text, style, reply_tx } => {
+        InferenceJob::Full {
+            text,
+            style,
+            reply_tx,
+        } => {
             let result = (|| {
                 let prompt = crate::prompt::build_prompt(model, &text, style)?;
                 let mut output = String::new();
-                run_inference_with_ctx(model, ctx, config, style, &prompt, cached_prefix, |piece| {
-                    output.push_str(&piece);
-                    true
-                })?;
+                run_inference_with_ctx(
+                    model,
+                    ctx,
+                    config,
+                    style,
+                    &prompt,
+                    cached_prefix,
+                    |piece| {
+                        output.push_str(&piece);
+                        true
+                    },
+                )?;
                 Ok(output.trim().to_string())
             })();
             let _ = reply_tx.send(result);
         }
-        InferenceJob::Streaming { text, style, chunk_tx, done_tx } => {
+        InferenceJob::Streaming {
+            text,
+            style,
+            chunk_tx,
+            done_tx,
+        } => {
             let result = (|| {
                 let prompt = crate::prompt::build_prompt(model, &text, style)?;
                 run_inference_with_ctx(model, ctx, config, style, &prompt, cached_prefix, |piece| {
@@ -268,7 +292,12 @@ impl Engine {
             Arc::clone(&inference_started_at),
         );
 
-        Ok(Self { worker, model_name, config, inference_started_at })
+        Ok(Self {
+            worker,
+            model_name,
+            config,
+            inference_started_at,
+        })
     }
 
     /// Fully blocking rewrite: returns the complete result string.
@@ -290,7 +319,8 @@ impl Engine {
         tx: mpsc::Sender<String>,
     ) -> Result<()> {
         let timeout = Duration::from_secs(self.config.inference_timeout_secs);
-        self.worker.run_streaming(text.to_string(), style, tx, timeout)
+        self.worker
+            .run_streaming(text.to_string(), style, tx, timeout)
     }
 
     pub fn model_name(&self) -> String {
@@ -398,7 +428,8 @@ impl EngineManager {
 
     /// Record the current time as the last active timestamp (call on each request).
     pub fn touch(&self) {
-        self.last_active.store(current_unix_secs(), Ordering::Relaxed);
+        self.last_active
+            .store(current_unix_secs(), Ordering::Relaxed);
     }
 
     /// Seconds elapsed since the last request; 0 if no request has ever been made.
@@ -523,7 +554,8 @@ where
                 .add(token, pos, &[0], i as i32 == last_idx)
                 .context("adding suffix token to batch")?;
         }
-        ctx.decode(&mut batch).context("suffix prefill decode failed")?;
+        ctx.decode(&mut batch)
+            .context("suffix prefill decode failed")?;
 
         (n_total, last_idx)
     } else {
@@ -590,7 +622,12 @@ where
         }
 
         let piece = model
-            .token_to_piece(token, &mut decoder, /* special */ true, /* lstrip */ None)
+            .token_to_piece(
+                token,
+                &mut decoder,
+                /* special */ true,
+                /* lstrip */ None,
+            )
             .context("decoding token to string")?;
 
         if !on_token(piece) {

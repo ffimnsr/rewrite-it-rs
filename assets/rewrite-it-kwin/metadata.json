@@ -1,0 +1,12 @@
+{
+    "KPackageStructure": "KWin/Script",
+    "KPlugin": {
+        "Id": "rewrite-it-shortcut",
+        "Name": "Rewrite It",
+        "Icon": "preferences-system-windows",
+        "Description": "Global shortcut (Meta+Shift+G) to rewrite the selected text via the rewrite-it daemon, then paste it on Wayland when portal permission is available.",
+        "Version": "1.0",
+        "License": "MIT",
+        "Authors": [{ "Name": "Edward Fitz Abucay", "Email": "gh:ffimnsr" }]
+    }
+}

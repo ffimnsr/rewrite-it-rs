@@ -9,6 +9,7 @@
 //! |--------|-----------|-------------|
 //! | `Rewrite` | `(s text, s style) → s` | Blocking full rewrite |
 //! | `StartRewrite` | `(s text, s style) → s job_id` | Async streaming rewrite |
+//! | `RewriteSelection` | `(s style) → ()` | Read clipboard, rewrite, write back |
 //! | `ListStyles` | `() → as` | Available style names |
 //! | `IsReady` | `() → b` | Model loaded and ready |
 //!
@@ -21,13 +22,21 @@
 //! | `Error` | `(s job_id, s message)` | Generation failed |
 
 use std::{
+    env,
     str::FromStr,
     sync::{Arc, OnceLock},
 };
 
 use anyhow::Result;
+use ashpd::desktop::{
+    remote_desktop::{DeviceType, KeyState, RemoteDesktop, SelectDevicesOptions},
+    PersistMode,
+};
+use enumflags2::BitFlags;
 use sd_notify::NotifyState;
-use tracing::{error, info};
+use tokio::io::AsyncWriteExt as _;
+use tokio::sync::Mutex;
+use tracing::{error, info, warn};
 use zbus::{connection, interface, SignalContext};
 
 use crate::{llm::EngineManager, prompt::Style};
@@ -60,6 +69,11 @@ pub trait Rewriter {
     /// True when the model is loaded and ready to accept requests.
     async fn is_ready(&self) -> zbus::Result<bool>;
 
+    /// Read the primary selection / clipboard, rewrite it with `style`, then
+    /// copy the result back to the clipboard and show a desktop notification.
+    /// Intended to be called from a global shortcut (KWin script).
+    async fn rewrite_selection(&self, style: &str) -> zbus::Result<()>;
+
     #[zbus(property)]
     fn model_name(&self) -> zbus::Result<String>;
 
@@ -76,14 +90,18 @@ pub(crate) struct RewriterService {
     /// Stored as an instance-level `OnceLock` (not a `static`) so there is no
     /// global mutable state and multiple service instances can coexist in tests.
     conn: Arc<OnceLock<zbus::Connection>>,
+    /// Portal restore token kept for the lifetime of the daemon so repeated
+    /// Wayland paste requests can usually avoid re-prompting the user.
+    paste_restore_token: Arc<Mutex<Option<String>>>,
 }
 
 impl RewriterService {
-    pub(crate) fn new(
-        engine: Arc<EngineManager>,
-        conn: Arc<OnceLock<zbus::Connection>>,
-    ) -> Self {
-        Self { engine, conn }
+    pub(crate) fn new(engine: Arc<EngineManager>, conn: Arc<OnceLock<zbus::Connection>>) -> Self {
+        Self {
+            engine,
+            conn,
+            paste_restore_token: Arc::new(Mutex::new(None)),
+        }
     }
 }
 
@@ -190,6 +208,67 @@ impl RewriterService {
         Ok(self.engine.is_ready())
     }
 
+    /// Read the primary selection (highlighted text) or clipboard, rewrite it
+    /// using `style`, copy the result back to the clipboard, and show a
+    /// desktop notification.
+    ///
+    /// Requires `wl-clipboard` (Wayland) or `xclip` (X11) to be installed.
+    /// On Wayland, the daemon also attempts a best-effort portal-backed
+    /// Ctrl+V after updating the clipboard. If portal input permission is not
+    /// available, the rewritten text remains on the clipboard for manual paste.
+    /// Intended to be called from a global shortcut via a KWin script.
+    async fn rewrite_selection(&self, style: String) -> zbus::fdo::Result<()> {
+        self.engine.touch();
+
+        let text = read_selection()
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(format!("reading selection: {e}")))?;
+
+        validate_text(&text)?;
+
+        let style_enum = Style::from_str(&style).expect("style parsing is infallible");
+        let engine = self
+            .engine
+            .ensure_ready()
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+
+        let result = tokio::task::spawn_blocking(move || engine.rewrite(&text, style_enum))
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(format!("task join: {e}")))?
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+
+        write_clipboard(&result)
+            .await
+            .map_err(|e| zbus::fdo::Error::Failed(format!("writing clipboard: {e}")))?;
+
+        let pasted = match try_paste_wayland_clipboard(&self.paste_restore_token).await {
+            Ok(pasted) => pasted,
+            Err(e) => {
+                warn!("wayland auto-paste failed: {e}");
+                false
+            }
+        };
+
+        // Best-effort desktop notification; ignored if notify-send is absent.
+        let body = if pasted {
+            "Selection replaced and pasted."
+        } else {
+            "Selection replaced and copied to the clipboard."
+        };
+        let _ = tokio::process::Command::new("notify-send")
+            .args([
+                "--app-name=rewrite-it",
+                "--icon=accessories-text-editor",
+                "Text rewritten",
+                body,
+            ])
+            .status()
+            .await;
+
+        Ok(())
+    }
+
     /// Return metadata about the running service.
     #[zbus(property)]
     fn model_name(&self) -> String {
@@ -232,6 +311,145 @@ fn validate_text(text: &str) -> zbus::fdo::Result<()> {
         ));
     }
     Ok(())
+}
+
+async fn try_paste_wayland_clipboard(restore_token: &Arc<Mutex<Option<String>>>) -> Result<bool> {
+    if !is_wayland_session() {
+        return Ok(false);
+    }
+
+    let portal = RemoteDesktop::new().await?;
+    let available = portal.available_device_types().await?;
+    if !available.contains(DeviceType::Keyboard) {
+        return Ok(false);
+    }
+
+    let session = portal.create_session(Default::default()).await?;
+
+    let token = {
+        let guard = restore_token.lock().await;
+        guard.clone()
+    };
+
+    let select_options = SelectDevicesOptions::default()
+        .set_devices(BitFlags::from_flag(DeviceType::Keyboard))
+        .set_persist_mode(PersistMode::Application)
+        .set_restore_token(token.as_deref());
+    portal
+        .select_devices(&session, select_options)
+        .await?
+        .response()?;
+
+    let selected = portal
+        .start(&session, None, Default::default())
+        .await?
+        .response()?;
+    if !selected.devices().contains(DeviceType::Keyboard) {
+        return Ok(false);
+    }
+
+    if let Some(token) = selected.restore_token() {
+        let mut guard = restore_token.lock().await;
+        *guard = Some(token.to_string());
+    }
+
+    let paste_result = send_ctrl_v(&portal, &session).await;
+    let _ = session.close().await;
+    paste_result?;
+    Ok(true)
+}
+
+fn is_wayland_session() -> bool {
+    env::var_os("WAYLAND_DISPLAY").is_some()
+        || env::var("XDG_SESSION_TYPE")
+            .map(|value| value.eq_ignore_ascii_case("wayland"))
+            .unwrap_or(false)
+}
+
+async fn send_ctrl_v(
+    portal: &RemoteDesktop,
+    session: &ashpd::desktop::Session<RemoteDesktop>,
+) -> Result<()> {
+    // XDG Remote Desktop keycodes are Linux evdev keycodes.
+    const KEY_LEFTCTRL: i32 = 29;
+    const KEY_V: i32 = 47;
+
+    // Send a conventional Ctrl+V chord through the approved portal session.
+    portal
+        .notify_keyboard_keycode(session, KEY_LEFTCTRL, KeyState::Pressed, Default::default())
+        .await?;
+    portal
+        .notify_keyboard_keycode(session, KEY_V, KeyState::Pressed, Default::default())
+        .await?;
+    portal
+        .notify_keyboard_keycode(session, KEY_V, KeyState::Released, Default::default())
+        .await?;
+    portal
+        .notify_keyboard_keycode(
+            session,
+            KEY_LEFTCTRL,
+            KeyState::Released,
+            Default::default(),
+        )
+        .await?;
+    Ok(())
+}
+
+// ── Clipboard helpers (used by RewriteSelection) ──────────────────────────────
+
+/// Read text from the Wayland primary selection or clipboard.
+///
+/// Tries (in order): `wl-paste --primary`, `wl-paste`, `xclip -selection primary`,
+/// `xclip -selection clipboard`.  Returns an error when nothing is available.
+async fn read_selection() -> Result<String> {
+    type Argv = &'static [&'static str];
+    let candidates: &[Argv] = &[
+        &["wl-paste", "--primary", "--no-newline"],
+        &["wl-paste", "--no-newline"],
+        &["xclip", "-o", "-selection", "primary"],
+        &["xclip", "-o", "-selection", "clipboard"],
+    ];
+    for argv in candidates {
+        if let Ok(out) = tokio::process::Command::new(argv[0])
+            .args(&argv[1..])
+            .output()
+            .await
+        {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !text.is_empty() {
+                    return Ok(text);
+                }
+            }
+        }
+    }
+    anyhow::bail!(
+        "selection/clipboard is empty or no clipboard tool found \
+         (install wl-clipboard for Wayland or xclip for X11)"
+    )
+}
+
+/// Write `text` to the system clipboard via `wl-copy` (Wayland) or
+/// `xclip -selection clipboard` (X11).
+async fn write_clipboard(text: &str) -> Result<()> {
+    type Argv = &'static [&'static str];
+    let candidates: &[Argv] = &[&["wl-copy"], &["xclip", "-selection", "clipboard"]];
+    for argv in candidates {
+        let Ok(mut child) = tokio::process::Command::new(argv[0])
+            .args(&argv[1..])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+        else {
+            continue;
+        };
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(text.as_bytes()).await;
+        }
+        if child.wait().await.map(|s| s.success()).unwrap_or(false) {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("failed to write clipboard (install wl-clipboard or xclip)")
 }
 
 // ── Service entry-point ───────────────────────────────────────────────────────

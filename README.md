@@ -19,7 +19,8 @@ the cloud.
 | **DBus activation** | Daemon auto-starts on first request; no background service manager needed |
 | **Lazy model startup** | Model download and load happen on first real rewrite request |
 | **Streaming** | `StartRewrite` emits token-by-token DBus signals for live UX |
-| **Clipboard helper** | `rewrite-it-selection` reads selected text → rewrites → copies result |
+| **Clipboard helper** | Rewrites the current selection and updates the clipboard |
+| **Wayland paste** | On Plasma Wayland, can send a portal-approved `Ctrl+V` after rewriting |
 | **GPU-optional** | Build with `--features cuda` or `--features vulkan` for GPU acceleration |
 
 ---
@@ -45,9 +46,15 @@ echo "the cat eat the mouse" | cargo run --bin llm-test -- --style grammar
 # → "The cat eats the mouse."
 
 # 5. Or use the keyboard shortcut (select text first)
-#    KDE:   Meta+Shift+R
-#    GNOME: Super+Shift+R
+#    KDE:   Meta+Shift+G
+#    GNOME: Super+Shift+G
 ```
+
+On KDE Plasma Wayland, the first shortcut-triggered paste may show an
+`xdg-desktop-portal-kde` permission dialog because keyboard injection is done
+through the XDG Remote Desktop portal. If permission is denied or the portal is
+unavailable, rewrite-it still succeeds and leaves the rewritten text on the
+clipboard for manual paste.
 
 ---
 
@@ -103,6 +110,7 @@ n_gpu_layers = 999
 |--------|-----------|-------------|
 | `Rewrite` | `(s, s) → s` | Blocking rewrite (text, style → result) |
 | `StartRewrite` | `(s, s) → s` | Streaming rewrite → returns job_id |
+| `RewriteSelection` | `(s) → ()` | Rewrite the current selection/clipboard using `style`, then copy the result back |
 | `ListStyles` | `() → as` | List available styles |
 | `IsReady` | `() → b` | True when model is loaded |
 
@@ -131,6 +139,10 @@ n_gpu_layers = 999
 # Full blocking rewrite
 busctl --user call org.rewriteit.Rewriter1 /org/rewriteit/Rewriter \
     org.rewriteit.Rewriter1 Rewrite ss "the cat eat the mouse" "grammar"
+
+# Rewrite the current selection / clipboard using the "grammar" style
+busctl --user call org.rewriteit.Rewriter1 /org/rewriteit/Rewriter \
+    org.rewriteit.Rewriter1 RewriteSelection s "grammar"
 
 # Or use the built-in CLI client
 echo "the cat eat the mouse" | rewrite-it rewrite --style grammar
@@ -167,7 +179,11 @@ Use `rewrite-it status` to inspect whether the daemon is `idle`, `downloading`,
 | `cc` / `g++` | C/C++ compiler for llama.cpp |
 | `wl-clipboard` | Wayland clipboard (optional, for keyboard shortcut) |
 | `xclip` | X11 clipboard (optional, for keyboard shortcut) |
+| `xdg-desktop-portal` + `xdg-desktop-portal-kde` | Wayland keyboard injection permission for portal-backed paste (optional) |
 | `libnotify` | Desktop notifications via `notify-send` (optional) |
+
+The portal packages are only needed for automatic paste on Wayland. Clipboard
+rewrite continues to work without them.
 
 ---
 
@@ -176,10 +192,10 @@ Use `rewrite-it status` to inspect whether the daemon is `idle`, `downloading`,
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  Desktop (KDE / GNOME)                                  │
-│    keyboard shortcut ──→ rewrite-it-selection (shell)   │
+│    keyboard shortcut ──→ KWin / desktop shortcut        │
 │    Dolphin right-click → rewrite-it-selection (shell)   │
 └────────────────────┬────────────────────────────────────┘
-                     │ rewrite-it rewrite --style … (CLI)
+                     │ DBus method call / rewrite-it rewrite --style … (CLI)
                      │
 ┌────────────────────▼────────────────────────────────────┐
 │  DBus session bus                                       │
@@ -188,6 +204,8 @@ Use `rewrite-it status` to inspect whether the daemon is `idle`, `downloading`,
                      │
 ┌────────────────────▼────────────────────────────────────┐
 │  rewrite-it daemon (Rust + tokio + zbus)                │
+│    selection read → LLM rewrite → clipboard update      │
+│    Wayland paste via XDG Remote Desktop portal          │
 │    ┌──────────────────────────────────────────────────┐ │
 │    │  LLM Engine (llama-cpp-2)                        │ │
 │    │    Phi-4-mini-instruct Q4_K_M (≈2.49 GB)         │ │
