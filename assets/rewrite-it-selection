@@ -14,8 +14,24 @@
 
 set -euo pipefail
 
-STYLE="${1:-grammar}"
+STYLE="${1:-}"
 FILE="${2:-}"
+
+# ── 0. Pick a style interactively if none was provided ────────────────────────
+
+if [[ -z "$STYLE" ]]; then
+    STYLES=("grammar" "formal" "casual" "concise" "elaborate" "creative")
+    if command -v kdialog &>/dev/null; then
+        STYLE="$(kdialog --title "rewrite-it" --combobox "Choose rewriting style:" \
+            "${STYLES[@]}" --default "grammar" 2>/dev/null)" || exit 0
+    elif command -v zenity &>/dev/null; then
+        STYLE="$(printf '%s\n' "${STYLES[@]}" | zenity --list --title="rewrite-it" \
+            --column="Style" --text="Choose rewriting style:" 2>/dev/null)" || exit 0
+    else
+        # No GUI dialog available — fall back to grammar.
+        STYLE="grammar"
+    fi
+fi
 
 # ── 1. Get the text to rewrite ────────────────────────────────────────────────
 

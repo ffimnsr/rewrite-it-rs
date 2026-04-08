@@ -199,10 +199,9 @@ impl RewriterService {
     /// desktop notification.
     ///
     /// Requires `wl-clipboard` (Wayland) or `xclip` (X11) to be installed.
-    /// On Wayland, the daemon also attempts a best-effort portal-backed
-    /// Ctrl+V after updating the clipboard. If portal input permission is not
-    /// available, the rewritten text remains on the clipboard for manual paste.
-    /// Intended to be called from a global shortcut via a KWin script.
+    /// The rewritten text is placed on the clipboard for the user to paste
+    /// manually (Ctrl+V). Intended to be called from a global shortcut via
+    /// a KWin script.
     async fn rewrite_selection(&self, style: String) -> zbus::fdo::Result<()> {
         self.engine.touch();
 

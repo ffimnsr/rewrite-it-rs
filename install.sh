@@ -5,8 +5,8 @@
 # installed files, and re-registers the DBus / systemd / shortcut entries.
 #
 # Builds the release binary, installs it together with the DBus activation
-# service, the clipboard helper script, the KDE service menu, and registers an
-# optional keyboard shortcut for "Help me rewrite (fix grammar)".
+# service, the clipboard helper script, and registers keyboard shortcuts
+# for rewriting with different styles (grammar, formal, concise, etc.).
 #
 # Tested on KDE Plasma 6+ (Wayland + X11) and GNOME 45+.
 #
@@ -118,12 +118,11 @@ else
     echo "    (systemd user session not running; reload manually after login)"
 fi
 
-# ── KDE service menu ──────────────────────────────────────────────────────────
-if [ -d "$HOME/.local/share/kio" ] || command -v plasmashell &>/dev/null; then
-    KDE_MENU_DIR="$HOME/.local/share/kio/servicemenus"
-    mkdir -p "$KDE_MENU_DIR"
-    cp -f "$REPO_ROOT/assets/rewrite-it-kde.desktop" "$KDE_MENU_DIR/rewrite-it.desktop"
-    echo "    kde     → $KDE_MENU_DIR/rewrite-it.desktop"
+# ── Remove legacy KDE service menu (no longer shipped) ────────────────────────
+KDE_MENU_FILE="$HOME/.local/share/kio/servicemenus/rewrite-it.desktop"
+if [ -f "$KDE_MENU_FILE" ]; then
+    rm -f "$KDE_MENU_FILE"
+    echo "    removed legacy KDE service menu: $KDE_MENU_FILE"
 fi
 
 # ── Keyboard shortcut ─────────────────────────────────────────────────────────
@@ -131,8 +130,10 @@ echo ""
 echo "==> Registering keyboard shortcut…"
 
 SHORTCUT_CMD="$INSTALL_DIR/rewrite-it-selection grammar"
-# Meta+Shift+G (mnemonic: Grammar) — verified free on a default KDE Plasma 6
-# install; does not conflict with any Spectacle, kwin, or system shortcut.
+# Default shortcuts (all verified free on stock KDE Plasma 6):
+#   Meta+Shift+G → grammar   Meta+Shift+F → formal   Meta+Shift+C → concise
+# Additional styles (casual, elaborate, creative) are registered with no default
+# key — users can bind them in System Settings → Shortcuts → KWin.
 SHORTCUT_KEY="Meta+Shift+G"
 
 if command -v kwriteconfig6 &>/dev/null || command -v kwriteconfig5 &>/dev/null; then
@@ -142,12 +143,23 @@ if command -v kwriteconfig6 &>/dev/null || command -v kwriteconfig5 &>/dev/null;
     # (KHotKeys was removed).  kglobalshortcutsrc entries are only active when a
     # running application has registered the component with kglobalaccel.
     #
-    # A KWin script registers the shortcut at the compositor level — always
+    # A KWin script registers shortcuts at the compositor level — always
     # grabbed, works on X11 and Wayland — and calls our DBus service directly.
-    # The daemon updates the clipboard and, on Wayland, attempts a Ctrl+V
-    # through the XDG Remote Desktop portal after the user grants permission.
+    # The daemon copies the rewritten text to the clipboard for manual paste.
     KWIN_PKG_TOOL="$(command -v kpackagetool6 2>/dev/null || command -v kpackagetool5 2>/dev/null || true)"
     if [ -n "$KWIN_PKG_TOOL" ]; then
+        # Clean up stale shortcut entries from previous installs.
+        > ~/.config/khotkeysrc 2>/dev/null || true
+        sed -i '/^\[rewrite-it\]/,/^$/d' ~/.config/kglobalshortcutsrc 2>/dev/null || true
+        # Remove stale kglobalaccel components that may block key re-registration.
+        if command -v gdbus &>/dev/null; then
+            for _comp in rewrite_it rewrite_it_desktop; do
+                gdbus call --session --dest org.kde.kglobalaccel \
+                    --object-path "/component/$_comp" \
+                    --method org.kde.kglobalaccel.Component.cleanUp 2>/dev/null || true
+            done
+        fi
+
         # Upgrade if already installed; install fresh otherwise.
         # Always remove first (handles corrupt/outdated installs) then reinstall.
         rm -rf "$HOME/.local/share/kwin/scripts/rewrite-it-shortcut"
@@ -159,12 +171,14 @@ if command -v kwriteconfig6 &>/dev/null || command -v kwriteconfig5 &>/dev/null;
         kwriteconfig6 --file kwinrc --group Plugins \
             --key "kwinscript_rewrite-it-shortcutEnabled" true 2>/dev/null || true
 
-        # Tell the running KWin to load and start the script immediately.
-        # reconfigure alone doesn't start net-new scripts; we must call
-        # loadScript (with the JS entry-point path) then start().
+        # Tell the running KWin to unload, reload and start the script so all
+        # shortcuts (grammar, formal, concise, casual, elaborate, creative) are
+        # registered immediately without needing a logout.
         _qdbus="$(command -v qdbus6 2>/dev/null || command -v qdbus-qt6 2>/dev/null || command -v qdbus 2>/dev/null || true)"
         _script_js="$HOME/.local/share/kwin/scripts/rewrite-it-shortcut/contents/code/main.js"
         if [ -n "$_qdbus" ] && [ -f "$_script_js" ]; then
+            "$_qdbus" org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript \
+                "rewrite-it-shortcut" 2>/dev/null || true
             "$_qdbus" org.kde.KWin /KWin reconfigure 2>/dev/null || true
             "$_qdbus" org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript \
                 "$_script_js" "rewrite-it-shortcut" 2>/dev/null >/dev/null || true
@@ -176,8 +190,9 @@ if command -v kwriteconfig6 &>/dev/null || command -v kwriteconfig5 &>/dev/null;
         echo "         kpackagetool6 --type=KWin/Script --install $REPO_ROOT/assets/rewrite-it-kwin"
     fi
 
-    echo "    KDE shortcut registered: $SHORTCUT_KEY → $SHORTCUT_CMD"
-    echo "    (You may also rebind it in System Settings → Keyboard → Shortcuts → Global Shortcuts → rewrite-it)"
+    echo "    KDE shortcuts registered:"
+    echo "      Meta+Shift+G → grammar   Meta+Shift+F → formal   Meta+Shift+C → concise"
+    echo "    (Rebind or add casual/elaborate/creative in System Settings → Shortcuts → KWin)"
 elif command -v gsettings &>/dev/null && gsettings list-schemas 2>/dev/null | grep -q 'org.gnome.settings-daemon'; then
     # GNOME: add a custom keybinding
     BINDING_PATH='/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/rewrite-it/'
@@ -198,6 +213,6 @@ echo "    Start the daemon     : rewrite-it"
 echo "    Rewrite from terminal: echo 'Hello world.' | rewrite-it rewrite"
 echo "    Check model status   : rewrite-it status"
 echo "    Pre-download model   : rewrite-it setup"
-echo "    Keyboard shortcut    : $SHORTCUT_KEY  (select text first, then press)"
+echo "    Keyboard shortcuts   : Meta+Shift+G (grammar), +F (formal), +C (concise)"
 echo ""
 echo "    To uninstall: bash $REPO_ROOT/uninstall.sh"
