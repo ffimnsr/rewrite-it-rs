@@ -54,7 +54,9 @@ On KDE Plasma Wayland, the first shortcut-triggered paste may show an
 `xdg-desktop-portal-kde` permission dialog because keyboard injection is done
 through the XDG Remote Desktop portal. If permission is denied or the portal is
 unavailable, rewrite-it still succeeds and leaves the rewritten text on the
-clipboard for manual paste.
+clipboard for manual paste. When permission is approved with "Allow restoring
+on future sessions", rewrite-it stores the restore token in local state so the
+prompt should not reappear after daemon restarts.
 
 ---
 
