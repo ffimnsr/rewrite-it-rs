@@ -40,9 +40,30 @@ check_cmd cargo
 check_cmd cmake   # required by llama-cpp-2 build script
 check_cmd cc      # C/C++ compiler needed to build llama.cpp
 
+if [ "$FEATURES" = "--features vulkan" ]; then
+    check_cmd glslc  # Vulkan shader compiler (usually in vulkan-tools or shaderc)
+    # Verify the Vulkan loader library and headers are present
+    if ! pkg-config --exists vulkan 2>/dev/null && [ ! -f /usr/include/vulkan/vulkan.h ]; then
+        echo "Error: Vulkan development files not found."
+        echo "Install the Vulkan SDK (e.g. 'sudo apt install libvulkan-dev vulkan-tools glslc'"
+        echo "or 'sudo dnf install vulkan-loader-devel vulkan-headers glslc')."
+        exit 1
+    fi
+fi
+
 # ── Build ─────────────────────────────────────────────────────────────────────
 echo "==> Building rewrite-it (release)…"
 cd "$REPO_ROOT"
+
+# llama-cpp-sys-2 caches its CMake build directory. When switching between CPU /
+# CUDA / Vulkan back-ends the stale cache causes "Makefile: No such file or
+# directory" because CMake skips reconfiguration.  Remove those build artefacts
+# so CMake always runs a fresh configure step.
+if [ -n "$FEATURES" ]; then
+    echo "    cleaning stale llama-cpp-sys-2 build cache…"
+    rm -rf target/release/build/llama-cpp-sys-2-*/
+fi
+
 # shellcheck disable=SC2086
 cargo build --release $FEATURES
 

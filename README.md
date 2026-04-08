@@ -19,8 +19,7 @@ the cloud.
 | **DBus activation** | Daemon auto-starts on first request; no background service manager needed |
 | **Lazy model startup** | Model download and load happen on first real rewrite request |
 | **Streaming** | `StartRewrite` emits token-by-token DBus signals for live UX |
-| **Clipboard helper** | Rewrites the current selection and updates the clipboard |
-| **Wayland paste** | On Plasma Wayland, can send a portal-approved `Ctrl+V` after rewriting |
+| **Clipboard helper** | Rewrites the current selection and copies result to clipboard |
 | **GPU-optional** | Build with `--features cuda` or `--features vulkan` for GPU acceleration |
 
 ---
@@ -46,17 +45,11 @@ echo "the cat eat the mouse" | cargo run --bin llm-test -- --style grammar
 # → "The cat eats the mouse."
 
 # 5. Or use the keyboard shortcut (select text first)
-#    KDE:   Meta+Shift+G
+#    KDE:   Meta+Shift+G (grammar), Meta+Shift+F (formal), Meta+Shift+C (concise)
 #    GNOME: Super+Shift+G
 ```
 
-On KDE Plasma Wayland, the first shortcut-triggered paste may show an
-`xdg-desktop-portal-kde` permission dialog because keyboard injection is done
-through the XDG Remote Desktop portal. If permission is denied or the portal is
-unavailable, rewrite-it still succeeds and leaves the rewritten text on the
-clipboard for manual paste. When permission is approved with "Allow restoring
-on future sessions", rewrite-it stores the restore token in local state so the
-prompt should not reappear after daemon restarts.
+The rewritten text is copied to the clipboard — paste with Ctrl+V.
 
 ---
 
@@ -90,6 +83,15 @@ cargo build --release --features cuda
 # Vulkan (AMD / Intel / NVIDIA)
 cargo build --release --features vulkan
 ```
+
+GPU builds need extra system packages before compilation:
+
+- CUDA:
+    - Debian/Ubuntu: `sudo apt install nvidia-cuda-toolkit`
+    - Fedora: `sudo dnf install cuda-toolkit`
+- Vulkan:
+    - Debian/Ubuntu: `sudo apt install libvulkan-dev vulkan-tools glslc`
+    - Fedora: `sudo dnf install vulkan-loader-devel vulkan-headers glslc`
 
 Then set `n_gpu_layers` in the config to the number of transformer layers
 to offload (`999` = offload all):
@@ -160,12 +162,19 @@ echo "the cat eat the mouse" | rewrite-it rewrite --style grammar
 model_path   = "~/.local/share/rewrite-it/models/Phi-4-mini-instruct-Q4_K_M.gguf"
 hf_repo      = "unsloth/Phi-4-mini-instruct-GGUF"
 hf_filename  = "Phi-4-mini-instruct-Q4_K_M.gguf"
-context_size = 4096
-max_tokens   = 1024
+context_size = 2048
+max_tokens   = 512
 temperature  = 0.3
 n_gpu_layers = 0
 seed         = 42
 # n_threads  = 8   # uncomment to pin CPU thread count
+```
+
+All fields have sensible defaults — you only need to set the values you want to
+override. For example, to enable GPU offloading:
+
+```toml
+n_gpu_layers = 33
 ```
 
 Use `rewrite-it status` to inspect whether the daemon is `idle`, `downloading`,
@@ -179,13 +188,11 @@ Use `rewrite-it status` to inspect whether the daemon is `idle`, `downloading`,
 |---------|---------|
 | `cmake` | Build llama.cpp (required) |
 | `cc` / `g++` | C/C++ compiler for llama.cpp |
+| CUDA toolkit | Required for `cargo build --release --features cuda` on Debian/Ubuntu: `sudo apt install nvidia-cuda-toolkit`; on Fedora: `sudo dnf install cuda-toolkit` |
+| Vulkan SDK | Required for `cargo build --release --features vulkan` on Debian/Ubuntu: `sudo apt install libvulkan-dev vulkan-tools glslc`; on Fedora: `sudo dnf install vulkan-loader-devel vulkan-headers glslc` |
 | `wl-clipboard` | Wayland clipboard (optional, for keyboard shortcut) |
 | `xclip` | X11 clipboard (optional, for keyboard shortcut) |
-| `xdg-desktop-portal` + `xdg-desktop-portal-kde` | Wayland keyboard injection permission for portal-backed paste (optional) |
 | `libnotify` | Desktop notifications via `notify-send` (optional) |
-
-The portal packages are only needed for automatic paste on Wayland. Clipboard
-rewrite continues to work without them.
 
 ---
 
@@ -195,7 +202,6 @@ rewrite continues to work without them.
 ┌─────────────────────────────────────────────────────────┐
 │  Desktop (KDE / GNOME)                                  │
 │    keyboard shortcut ──→ KWin / desktop shortcut        │
-│    Dolphin right-click → rewrite-it-selection (shell)   │
 └────────────────────┬────────────────────────────────────┘
                      │ DBus method call / rewrite-it rewrite --style … (CLI)
                      │
@@ -207,7 +213,6 @@ rewrite continues to work without them.
 ┌────────────────────▼────────────────────────────────────┐
 │  rewrite-it daemon (Rust + tokio + zbus)                │
 │    selection read → LLM rewrite → clipboard update      │
-│    Wayland paste via XDG Remote Desktop portal          │
 │    ┌──────────────────────────────────────────────────┐ │
 │    │  LLM Engine (llama-cpp-2)                        │ │
 │    │    Phi-4-mini-instruct Q4_K_M (≈2.49 GB)         │ │

@@ -7,7 +7,11 @@ const DEFAULT_HF_REPO: &str = "unsloth/Phi-4-mini-instruct-GGUF";
 const DEFAULT_HF_FILENAME: &str = "Phi-4-mini-instruct-Q4_K_M.gguf";
 
 /// Settings read from `~/.config/rewrite-it/config.toml` (created with defaults on first run).
+///
+/// All fields have sensible defaults so users can set only the values they want
+/// to override (e.g. just `n_gpu_layers = 33`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     /// Absolute path to the GGUF model file. Auto-downloaded when absent.
     pub model_path: PathBuf,
